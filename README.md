@@ -96,3 +96,84 @@ print(top_20_features)
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from collections import defaultdict
+
+# Information Value Function
+def calculate_iv(df, feature, target):
+    """Calculate Information Value (IV) for a feature"""
+    eps = 1e-10  # Small value to avoid division by zero
+    df['bin'] = pd.qcut(df[feature].rank(method="first"), q=10, duplicates='drop')
+    grouped = df.groupby('bin')[target].agg(['count', 'sum'])
+    grouped.columns = ['total', 'bad']
+    grouped['good'] = grouped['total'] - grouped['bad']
+    grouped['bad_dist'] = grouped['bad'] / (grouped['bad'].sum() + eps)
+    grouped['good_dist'] = grouped['good'] / (grouped['good'].sum() + eps)
+    grouped['woe'] = np.log(grouped['good_dist'] / grouped['bad_dist'] + eps)
+    grouped['iv'] = (grouped['good_dist'] - grouped['bad_dist']) * grouped['woe']
+    return grouped['iv'].sum()
+
+# Load Data
+df = pd.read_csv("your_data.csv")  # Replace with your actual file
+
+# Identify Data Types
+num_cols = df.select_dtypes(include=['number']).columns.tolist()
+obj_cols = df.select_dtypes(include=['object']).columns.tolist()
+bool_cols = df.select_dtypes(include=['bool']).columns.tolist()
+
+# Convert Boolean to Integer
+df[bool_cols] = df[bool_cols].astype(int)
+
+# Encode Categorical Columns
+label_encoders = defaultdict(LabelEncoder)
+for col in obj_cols:
+    df[col] = label_encoders[col].fit_transform(df[col])
+
+# Define Features and Target
+X = df.drop(columns=['target'])  # Replace 'target' with actual target column
+y = df['target']
+
+# Calculate IV for Each Feature
+iv_dict = {col: calculate_iv(df[[col, 'target']], col, 'target') for col in num_cols + obj_cols + bool_cols}
+iv_sorted = sorted(iv_dict.items(), key=lambda x: x[1], reverse=True)
+
+# Train XGBoost Model
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+xgb_model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss', importance_type='gain')
+xgb_model.fit(X_train, y_train)
+
+# Get Feature Importance from XGBoost
+xgb_importance = xgb_model.get_booster().get_score(importance_type="gain")
+xgb_importance_sorted = sorted(xgb_importance.items(), key=lambda x: x[1], reverse=True)
+
+# Merge IV and XGBoost Importance
+feature_importance_df = pd.DataFrame(iv_sorted, columns=['feature', 'IV'])
+feature_importance_df['XGB_Importance'] = feature_importance_df['feature'].map(dict(xgb_importance_sorted))
+feature_importance_df['XGB_Importance'].fillna(0, inplace=True)
+
+# Rank Features Based on IV and XGBoost Importance
+feature_importance_df['Final_Score'] = feature_importance_df['IV'] + feature_importance_df['XGB_Importance']
+feature_importance_df = feature_importance_df.sort_values(by='Final_Score', ascending=False)
+
+# Select Top 20 Features
+top_20_features = feature_importance_df.head(20)
+print(top_20_features)
+
+
+
